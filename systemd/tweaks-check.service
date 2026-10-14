@@ -1,0 +1,8 @@
+[Unit]
+Description=Count system tweaks not yet in TWEAKS.md
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/tweaks-check
+Nice=19
+IOSchedulingClass=idle

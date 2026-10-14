@@ -1,0 +1,175 @@
+#!/usr/bin/env bash
+# Set up omarchy-tweak-tracker on this machine. Safe to run again.
+#
+#   scripts/install                 ask for the data repo (first run), then set everything up
+#   scripts/install --data <path>   use this folder as the data repo
+#
+# - links the skill to ~/.claude/skills/tweaks, tweaks-audit and tweaks-check to ~/.local/bin,
+#   the fish reminder and the daily timer
+# - finds, clones or creates your private data repo (default: my-omarchy-tweaks next to this repo)
+#   and saves its path in ~/.config/omarchy-tweak-tracker/config
+# - adds the logging rule to ~/.claude/CLAUDE.md
+# - creates machines/<hostname>/ in the data repo with an empty TWEAKS.md and a baseline
+
+set -euo pipefail
+
+TOOL=$(dirname "$(dirname "$(readlink -f "$0")")")
+HOST=$(hostname)
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-tweak-tracker"
+CONFIG="$CONFIG_DIR/config"
+
+data_arg=
+while (($#)); do
+  case $1 in
+    --data) data_arg=${2:?--data needs a path}; shift 2 ;;
+    -h | --help) sed -n '2,13p' "$0"; exit 0 ;;
+    *) echo "unknown option: $1" >&2; exit 1 ;;
+  esac
+done
+
+ask() { # ask <question> <default y|n>
+  local reply
+  [[ -t 0 ]] || { [[ $2 == y ]]; return; }
+  read -rp "$1 [$([[ $2 == y ]] && echo Y/n || echo y/N)] " reply
+  reply=${reply:-$2}
+  [[ $reply == [yY]* ]]
+}
+
+link() {
+  local target=$1 link=$2
+  mkdir -p "$(dirname "$link")"
+  if [[ -e $link && ! -L $link ]]; then
+    echo "skip: $link exists and is not a symlink"
+    return
+  fi
+  ln -sfn "$target" "$link"
+  echo "linked: ${link/#$HOME/\~}"
+}
+
+# --- Tool -----------------------------------------------------------------------------------------
+link "$TOOL/skills/tweaks" "$HOME/.claude/skills/tweaks"
+link "$TOOL/skills/tweaks/scripts/tweaks-audit" "$HOME/.local/bin/tweaks-audit"
+link "$TOOL/skills/tweaks/scripts/tweaks-check" "$HOME/.local/bin/tweaks-check"
+link "$TOOL/fish/tweaks.fish" "$HOME/.config/fish/conf.d/tweaks.fish"
+link "$TOOL/systemd/tweaks-check.service" "$HOME/.config/systemd/user/tweaks-check.service"
+link "$TOOL/systemd/tweaks-check.timer" "$HOME/.config/systemd/user/tweaks-check.timer"
+
+# --- Data repo ------------------------------------------------------------------------------------
+DATA_DIR=
+if [[ -n $data_arg ]]; then
+  DATA_DIR=$(realpath -m "${data_arg/#\~/$HOME}")
+elif [[ -f $CONFIG ]]; then
+  # shellcheck source=/dev/null
+  source "$CONFIG"
+  DATA_DIR=${DATA_DIR/#\~/$HOME}
+else
+  default="$(dirname "$TOOL")/my-omarchy-tweaks"
+  if [[ -t 0 ]]; then
+    read -rp "Data repo folder (your private tweak lists) [${default/#$HOME/\~}]: " DATA_DIR
+  fi
+  DATA_DIR=${DATA_DIR:-$default}
+  DATA_DIR=$(realpath -m "${DATA_DIR/#\~/$HOME}")
+fi
+
+if [[ ! -d $DATA_DIR/.git ]]; then
+  name=$(basename "$DATA_DIR")
+  gh_user=$(gh api user -q .login 2>/dev/null || true)
+  if [[ -n $gh_user ]] && gh repo view "$gh_user/$name" >/dev/null 2>&1 &&
+    ask "Clone your existing GitHub repo $gh_user/$name into ${DATA_DIR/#$HOME/\~}?" y; then
+    gh repo clone "$gh_user/$name" "$DATA_DIR"
+  else
+    if [[ -z $(git config user.name) || -z $(git config user.email) ]]; then
+      echo "Set your git identity first: git config --global user.name \"Your Name\" && git config --global user.email you@example.com" >&2
+      exit 1
+    fi
+    mkdir -p "$DATA_DIR/machines"
+    git -C "$DATA_DIR" init -q -b main
+    cat >"$DATA_DIR/README.md" <<'EOF'
+# my-omarchy-tweaks
+
+My tweak lists, one per Omarchy machine, kept up to date by
+[omarchy-tweak-tracker](https://github.com/mibbo/omarchy-tweak-tracker).
+
+- `machines/<hostname>/TWEAKS.md`: everything changed on that machine, with status, scope, source, why and undo steps
+- `machines/<hostname>/baseline`: end of the Omarchy install; earlier changes count as the install itself
+- `machines/<hostname>/audit-ignore`: audit findings that aren't tweaks
+- `machines/<target>/setup.sh` and `files/`: generated when replicating tweaks to another machine
+EOF
+    printf '%s\n' "@README.md" "" "Data for omarchy-tweak-tracker. Use the \`tweaks\` skill to change it." >"$DATA_DIR/CLAUDE.md"
+    git -C "$DATA_DIR" add -A
+    git -C "$DATA_DIR" commit -qm "Start tweak lists"
+    echo "created: ${DATA_DIR/#$HOME/\~} (local git repo)"
+    if [[ -n $gh_user ]] && ask "Create a private GitHub repo $gh_user/$name for it?" y; then
+      gh repo create "$gh_user/$name" --private --source "$DATA_DIR" --push >/dev/null
+      echo "created: github.com/$gh_user/$name (private)"
+    fi
+  fi
+fi
+
+mkdir -p "$CONFIG_DIR"
+printf 'DATA_DIR="%s"\n' "${DATA_DIR/#$HOME/\~}" >"$CONFIG"
+echo "data repo: ${DATA_DIR/#$HOME/\~}"
+
+# --- Claude Code rule -----------------------------------------------------------------------------
+CLAUDE_MD="$HOME/.claude/CLAUDE.md"
+rule='<!-- omarchy-tweak-tracker -->
+## System tweaks
+After changing this machine'"'"'s setup (packages, /etc, /usr/local, udev, systemd, ~/.config, ~/.local/bin, or
+Claude Code settings, hooks or skills), log it with the `tweaks` skill before finishing. App and project code are not tweaks.
+<!-- /omarchy-tweak-tracker -->'
+mkdir -p "$(dirname "$CLAUDE_MD")"
+touch "$CLAUDE_MD"
+if ! grep -q '<!-- omarchy-tweak-tracker -->' "$CLAUDE_MD"; then
+  # Replace the block from older versions (marker "omarchy-tweaks") or append a new one
+  tmp=$(mktemp)
+  awk -v rule="$rule" '
+    /<!-- omarchy-tweaks -->/ { print rule; skip = 1; done = 1; next }
+    /<!-- \/omarchy-tweaks -->/ { skip = 0; next }
+    !skip { print }
+    END { if (!done) { if (NR) print ""; print rule } }
+  ' "$CLAUDE_MD" >"$tmp"
+  cat "$tmp" >"$CLAUDE_MD"
+  rm -f "$tmp"
+  echo "added: tweaks rule to ~/.claude/CLAUDE.md"
+fi
+
+# --- This machine ---------------------------------------------------------------------------------
+MDIR="$DATA_DIR/machines/$HOST"
+mkdir -p "$MDIR"
+if [[ ! -f $MDIR/baseline ]]; then
+  # First boot of this install: changes before it belong to Omarchy's installer
+  first_boot=$(journalctl --list-boots --no-pager -q 2>/dev/null | awk 'NR==1{print $4, $5}')
+  date -d "${first_boot:-now}" '+%F %T %z' >"$MDIR/baseline"
+  echo "created: machines/$HOST/baseline ($(<"$MDIR/baseline")), edit if the install ended later"
+fi
+if [[ ! -f $MDIR/TWEAKS.md ]]; then
+  model=$(cat /sys/devices/virtual/dmi/id/product_version 2>/dev/null || true)
+  cat >"$MDIR/TWEAKS.md" <<EOF
+# Tweaks on $HOST
+
+Model: ${model:-unknown}, installed $(date -d "$(<"$MDIR/baseline")" +%F).
+
+Status: \`keep\` · \`testing\` (trying it out) · \`remove-later\` (planned to remove) · \`review\` (purpose unclear, decide).
+Scope: \`any\` (any hardware) · \`laptop\` (any laptop) · the model, e.g. \`Framework 13\` (this laptop model).
+Source: \`custom\` · \`config\` · \`own repo\` · \`Omarchy\` · package source (\`pacman\`, \`AUR\`, \`uv\`, \`mise\`, ...).
+Needs: external devices a tweak depends on, so a setup script can check or adjust them.
+
+## Removed
+
+Removed tweaks move here with date and reason, so they aren't retried by accident.
+EOF
+  echo "created: machines/$HOST/TWEAKS.md"
+fi
+[[ -f $MDIR/audit-ignore ]] || printf '%s\n' "# Audit findings that are not tweaks here. One glob per line." >"$MDIR/audit-ignore"
+if [[ -n $(git -C "$DATA_DIR" status --porcelain -- "machines/$HOST") ]]; then
+  git -C "$DATA_DIR" add -- "machines/$HOST"
+  git -C "$DATA_DIR" commit -qm "Add $HOST" -- "machines/$HOST"
+  echo "committed: machines/$HOST"
+fi
+
+# --- Daily reminder -------------------------------------------------------------------------------
+systemctl --user daemon-reload
+systemctl --user enable --now tweaks-check.timer >/dev/null 2>&1 && echo "enabled: tweaks-check.timer (daily)"
+"$HOME/.local/bin/tweaks-check" --quiet | sed 's/^/checked: /'
+
+echo "done. Ask Claude to \"show my tweaks\" for a first audit."

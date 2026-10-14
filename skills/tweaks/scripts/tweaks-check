@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Count tweaks that TWEAKS.md doesn't match (unlisted or missing), for the fish greeting
+# (~/.config/fish/conf.d/tweaks.fish) and a desktop notification when the count grows.
+# Run daily by tweaks-check.timer, and after "sync tweaks" with --quiet.
+#
+#   tweaks-check           update the count, notify if it went up
+#   tweaks-check --quiet   update the count only
+
+set -uo pipefail
+export PATH="$HOME/.local/bin:$PATH"
+
+DIR=$(dirname "$(readlink -f "$0")")
+# shellcheck source=tweaks-env
+source "$DIR/tweaks-env"
+STATE="${XDG_CACHE_HOME:-$HOME/.cache}/omarchy-tweak-tracker"
+mkdir -p "$STATE"
+
+summary=$("$DIR/tweaks-audit" | tail -1)
+[[ $summary =~ ^Summary:\ ([0-9]+)\ unlisted,\ ([0-9]+)\ missing ]] || { echo "tweaks-audit failed: $summary" >&2; exit 1; }
+unlisted=${BASH_REMATCH[1]}
+missing=${BASH_REMATCH[2]}
+count=$((unlisted + missing))
+
+prev=$(awk '{print $1 + $2}' "$STATE/status" 2>/dev/null || echo 0)
+echo "$unlisted $missing" >"$STATE/status"
+echo "$unlisted unlisted, $missing missing"
+
+[[ ${1:-} == --quiet ]] && exit 0
+if ((count > prev)) && command -v omarchy-notification-send >/dev/null; then
+  omarchy-notification-send -u normal -g 󰒓 "Tweaks to sync: $count" \
+    "$unlisted unlisted, $missing missing in TWEAKS.md. Click to sync with Claude." \
+    --exec setsid uwsm-app -- xdg-terminal-exec -e bash -c "cd '$DATA_DIR' && claude 'sync tweaks'"
+fi
+exit 0

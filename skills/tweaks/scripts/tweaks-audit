@@ -1,0 +1,231 @@
+#!/usr/bin/env bash
+# Compare this machine against a stock Omarchy install and against TWEAKS.md.
+#
+#   tweaks-audit          everything readable without root
+#   tweaks-audit --sudo   also list /etc/sudoers.d and /etc/polkit-1/rules.d (names only)
+#
+# Lines are marked:  ✓ listed in TWEAKS.md   ⚠ not listed   ❌ listed but missing on disk
+# The last line is "Summary: <unlisted> unlisted, <missing> missing" (read by tweaks-check).
+# Findings are filtered by <data repo>/machines/<host>/baseline (changes after first boot) and
+# <data repo>/machines/<host>/audit-ignore (one glob per line, matched against the item).
+#
+# Packages in the ledger are backticked on **Packages:** lines: `name` for pacman/yay,
+# `<manager>:name` for the rest (uv, mise, npm, pnpm, bun, pipx, pip, cargo, go, flatpak).
+
+set -uo pipefail
+
+# shellcheck source=tweaks-env
+source "$(dirname "$(readlink -f "$0")")/tweaks-env"
+OMARCHY=/usr/share/omarchy
+SUDO=0
+[[ ${1:-} == --sudo ]] && SUDO=1
+
+[[ -f $LEDGER ]] || { echo "No ledger at $LEDGER (run scripts/install)"; exit 1; }
+
+# Changes at or before the baseline are part of the install, not tweaks
+if [[ -f $MDIR/baseline ]]; then
+  BASELINE=$(date -d "$(<"$MDIR/baseline")" +%s)
+else
+  BASELINE=$(date -d "$(journalctl --list-boots --no-pager -q 2>/dev/null | awk 'NR==1{print $4, $5}')" +%s 2>/dev/null || echo 0)
+fi
+
+ignore_patterns=(
+  /etc/.updated /etc/ld.so.cache '/etc/pacman.d/gnupg/*' /etc/machine-id /etc/adjtime
+  '/etc/ssh/ssh_host_*' '/etc/*-' /etc/.pwd.lock '/etc/udev/hwdb.bin' '/etc/ca-certificates/*'
+  '/etc/ssl/certs/*' '/etc/os-release' '/etc/systemd/system/*.wants/*'
+  '*.bak' '*.bak.*' '*~' '*/__pycache__/*' '*/mimeinfo.cache'
+)
+if [[ -f $MDIR/audit-ignore ]]; then
+  while IFS= read -r line; do
+    [[ -z $line || $line == \#* ]] || ignore_patterns+=("$line")
+  done <"$MDIR/audit-ignore"
+fi
+
+ignored() {
+  local item=$1 p
+  for p in "${ignore_patterns[@]}"; do
+    # shellcheck disable=SC2053
+    [[ $item == $p ]] && return 0
+  done
+  return 1
+}
+
+after_baseline() {
+  local m
+  m=$(stat -c %Y "$1" 2>/dev/null) || return 0
+  ((m > BASELINE))
+}
+
+# Listed when the item, its ~ form or its file name appears in the ledger
+listed() {
+  local item=$1
+  # file#part (e.g. settings.json#Stop): the file and the part must both be mentioned
+  if [[ $item == /*#* ]]; then
+    listed "${item%%#*}" && grep -qw -- "${item#*#}" "$LEDGER"
+    return
+  fi
+  grep -qF -- "$item" "$LEDGER" && return 0
+  # manager:name also matches a bare `name`
+  [[ $item != /* && $item == *:* ]] && grep -qF -- "\`${item#*:}\`" "$LEDGER" && return 0
+  [[ $item == "$HOME"/* ]] && grep -qF -- "~${item#"$HOME"}" "$LEDGER" && return 0
+  [[ $item == */* ]] && grep -qF -- "$(basename "$item")" "$LEDGER" && return 0
+  return 1
+}
+
+UNLISTED=0
+MISSING=0
+show() {
+  local item=$1 note=${2:-}
+  ignored "$item" && return
+  local shown=${item/#$HOME/\~}
+  if listed "$item"; then
+    printf '  ✓ %s%s\n' "$shown" "${note:+  ($note)}"
+  else
+    printf '  ⚠ %s%s\n' "$shown" "${note:+  ($note)}"
+    UNLISTED=$((UNLISTED + 1))
+  fi
+}
+
+# Run a tool from PATH, or through mise when it's only installed there (e.g. npm under the timer)
+tool() {
+  local name=$1; shift
+  if command -v "$name" >/dev/null; then
+    "$name" "$@"
+  elif command -v mise >/dev/null && mise which "$name" >/dev/null 2>&1; then
+    mise exec -- "$name" "$@"
+  else
+    return 127
+  fi
+}
+
+# Names installed by each non-pacman manager, one per line
+installed_by() {
+  case $1 in
+    uv) tool uv tool list 2>/dev/null | awk '!/^-/ && NF {print $1}' ;;
+    mise) tool mise ls --global 2>/dev/null | awk '{print $1}' | sort -u ;;
+    npm) tool npm ls -g --depth=0 --parseable 2>/dev/null | tail -n +2 | xargs -r -n1 basename | grep -vxE 'npm|corepack' ;;
+    pnpm) tool pnpm ls -g --depth=0 --parseable 2>/dev/null | tail -n +2 | xargs -r -n1 basename ;;
+    bun) tool bun pm ls -g 2>/dev/null | sed -nE 's/^[├└]── (@?[^@ ]+)@.*/\1/p' ;;
+    pipx) tool pipx list --short 2>/dev/null | awk '{print $1}' ;;
+    pip) find "$HOME"/.local/lib/python3*/site-packages -maxdepth 1 -name '*.dist-info' 2>/dev/null |
+      sed -E 's#.*/##; s/-[^-]+\.dist-info$//' ;;
+    cargo) tool cargo install --list 2>/dev/null | awk '/^[^ ]/{print $1}' ;;
+    go) [[ -d $HOME/go/bin ]] && ls "$HOME/go/bin" ;;
+    flatpak) tool flatpak list --app --columns=application 2>/dev/null ;;
+  esac
+}
+MANAGERS=(uv mise npm pnpm bun pipx pip cargo go flatpak)
+
+echo "Ledger: ${LEDGER/#$HOME/\~}"
+echo "Baseline: $(date -d "@$BASELINE" '+%F %H:%M')"
+
+echo
+echo "Packages added on top of Omarchy (pacman, yay)"
+omarchy_pkgs=$(sed 's/#.*//; s/[[:space:]]//g' "$OMARCHY"/install/omarchy-*.packages | grep . | sort -u)
+# First install time per package from pacman.log: installs during setup are not tweaks
+declare -A first_install
+while read -r ts pkg; do
+  [[ -n ${first_install[$pkg]:-} ]] || first_install[$pkg]=$ts
+done < <(sed -nE 's/^\[([^]]+)\] \[ALPM\] installed ([^ ]+) .*/\1 \2/p' /var/log/pacman.log)
+while read -r pkg; do
+  ts=${first_install[$pkg]:-}
+  if [[ -n $ts ]] && (($(date -d "$ts" +%s) <= BASELINE)); then continue; fi
+  note=${ts:0:10}
+  pacman -Qqm "$pkg" >/dev/null 2>&1 && note="$note, AUR"
+  show "$pkg" "$note"
+done < <(comm -23 <(pacman -Qqe | sort) <(echo "$omarchy_pkgs"))
+
+echo
+echo "Other installers"
+declare -A INSTALLED
+for m in "${MANAGERS[@]}"; do
+  while read -r t; do
+    [[ -n $t ]] || continue
+    INSTALLED["$m:$t"]=1
+    show "$m:$t"
+  done < <(installed_by "$m")
+done
+while read -r f; do
+  after_baseline "$f" && show "$f" "desktop entry"
+done < <(find "$HOME/.local/share/applications" "$HOME/Applications" -maxdepth 1 \
+  \( -name '*.desktop' -o -name '*.AppImage' \) 2>/dev/null | sort)
+
+echo
+echo "System files not from any package (/etc, /usr/local, /opt)"
+while read -r f; do
+  after_baseline "$f" && show "$f"
+done < <(comm -23 <(find /etc /usr/local /opt \( -type f -o -type l \) 2>/dev/null | sort) \
+  <(pacman -Qlq | sed 's#/$##' | sort -u))
+echo "Package config files you edited"
+while read -r f; do show "$f"; done < <(pacman -Qii 2>/dev/null | awk '/^MODIFIED/{print $2}')
+if ((SUDO)); then
+  echo "Root-only folders"
+  while read -r f; do show "$f"; done < <(sudo find /etc/sudoers.d /etc/polkit-1/rules.d -type f \
+    -newermt "@$BASELINE" 2>/dev/null | sort)
+else
+  echo "  (not checked: /etc/sudoers.d, /etc/polkit-1/rules.d; run tweaks-audit --sudo)"
+fi
+
+echo
+echo "Your config (~/.config compared to Omarchy's templates)"
+[[ -f $OMARCHY/default/bashrc ]] && ! cmp -s "$HOME/.bashrc" "$OMARCHY/default/bashrc" &&
+  show "$HOME/.bashrc" "changed from default"
+for d in hypr omarchy fish alacritty foot kitty ghostty systemd mise git starship.toml; do
+  [[ -e $HOME/.config/$d ]] || continue
+  while read -r f; do
+    rel=${f#"$HOME"/.config/}
+    if [[ -f $OMARCHY/config/$rel ]]; then
+      cmp -s "$f" "$OMARCHY/config/$rel" || show "$f" "changed from default"
+    else
+      after_baseline "$f" && show "$f" "added"
+    fi
+  done < <(find "$HOME/.config/$d" \( -type f -o -type l \) \
+    -not -path '*/themes/*' -not -path '*/themed/*' -not -path '*/branding/*' 2>/dev/null | sort)
+done
+
+echo
+echo "Your commands and Claude Code setup"
+for f in "$HOME"/.local/bin/*; do
+  [[ -e $f || -L $f ]] || continue
+  m=$(stat -c %Y "$f" 2>/dev/null); ((m > BASELINE)) && show "$f"
+done
+for f in "$HOME"/.claude/skills/*; do
+  [[ $(readlink -f "$f") == "$OMARCHY"/* || $(basename "$f") == synced ]] && continue
+  show "$f" "skill"
+done
+[[ -f $HOME/.claude/CLAUDE.md ]] && show "$HOME/.claude/CLAUDE.md"
+for f in "$HOME"/.claude/hooks/*; do [[ -e $f ]] && show "$f" "hook"; done
+if command -v jq >/dev/null && [[ -f $HOME/.claude/settings.json ]]; then
+  while read -r e; do
+    show "$HOME/.claude/settings.json#$e" "hook event"
+  done < <(jq -r '.hooks // {} | keys[]' "$HOME/.claude/settings.json")
+fi
+
+echo
+echo "Listed in TWEAKS.md but not found (active entries only)"
+missing() { echo "  ❌ $1"; MISSING=$((MISSING + 1)); }
+active=$(sed '/^## Removed/,$d' "$LEDGER")
+# Paths in backticks
+while read -r p; do
+  real=${p/#\~/$HOME}
+  real=${real%%#*}
+  [[ $real == /* && $real != *'*'* ]] || continue
+  [[ -e $real || -L $real ]] || missing "$p"
+done < <(grep -oE '`[~/][^`]*`' <<<"$active" | tr -d '`' | sort -u)
+# Packages in backticks on **Packages:** lines
+while read -r p; do
+  if [[ $p == *:* ]]; then
+    [[ -n ${INSTALLED[$p]:-} ]] || missing "$p"
+  else
+    pacman -Qq "$p" >/dev/null 2>&1 || missing "$p"
+  fi
+done < <(grep -E '^- \*\*Packages:\*\*' <<<"$active" | grep -oE '`[^`/~ ]+`' | tr -d '`' | sort -u)
+((MISSING)) || echo "  (none)"
+
+echo
+if cd "$DATA_DIR" 2>/dev/null; then
+  dirty=$(git status --porcelain | wc -l)
+  ahead=$(git rev-list --count '@{u}..HEAD' 2>/dev/null || echo "?")
+  echo "Repo: $dirty uncommitted file(s), $ahead unpushed commit(s)"
+fi
+echo "Summary: $UNLISTED unlisted, $MISSING missing"

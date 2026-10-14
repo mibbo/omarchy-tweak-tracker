@@ -1,0 +1,14 @@
+# Sourced by the tweaks-* scripts: finds the data repo and this machine's ledger.
+# The data repo is set in ~/.config/omarchy-tweak-tracker/config by scripts/install.
+
+CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-tweak-tracker/config"
+if [[ ! -f $CONFIG ]]; then
+  echo "omarchy-tweak-tracker is not set up: $CONFIG is missing (run scripts/install)" >&2
+  exit 1
+fi
+# shellcheck source=/dev/null
+source "$CONFIG"
+DATA_DIR=${DATA_DIR/#\~/$HOME}
+HOST=$(hostname)
+MDIR="$DATA_DIR/machines/$HOST"
+LEDGER="$MDIR/TWEAKS.md"

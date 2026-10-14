@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily check for system tweaks not yet in TWEAKS.md
+
+[Timer]
+OnCalendar=daily
+# Run at the next boot or wake if the laptop was off or asleep at midnight
+Persistent=true
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target

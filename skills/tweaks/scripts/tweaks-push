@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Push the data repo. Falls back to gh's HTTPS credentials when SSH can't reach a key
+# (e.g. from inside Claude Code, where there's no SSH agent).
+
+set -euo pipefail
+# shellcheck source=tweaks-env
+source "$(dirname "$(readlink -f "$0")")/tweaks-env"
+cd "$DATA_DIR"
+
+if git push -q 2>/dev/null; then
+  echo "pushed"
+  exit 0
+fi
+url=$(git remote get-url origin)
+case $url in
+  git@github.com:*) url="https://github.com/${url#git@github.com:}" ;;
+  ssh://git@github.com/*) url="https://github.com/${url#ssh://git@github.com/}" ;;
+esac
+branch=$(git branch --show-current)
+git -c credential.helper= -c credential.helper='!gh auth git-credential' push -q "$url" "$branch"
+# Update origin/<branch> so "unpushed commits" counts stay right
+git -c credential.helper='!gh auth git-credential' fetch -q "$url" "$branch:refs/remotes/origin/$branch" || true
+echo "pushed (HTTPS via gh)"
