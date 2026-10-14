@@ -170,6 +170,7 @@ echo
 echo "Your config (~/.config compared to Omarchy's templates)"
 [[ -f $OMARCHY/default/bashrc ]] && ! cmp -s "$HOME/.bashrc" "$OMARCHY/default/bashrc" &&
   show "$HOME/.bashrc" "changed from default"
+[[ -f ${ZDOTDIR:-$HOME}/.zshrc ]] && after_baseline "${ZDOTDIR:-$HOME}/.zshrc" && show "${ZDOTDIR:-$HOME}/.zshrc" "added"
 for d in hypr omarchy fish alacritty foot kitty ghostty systemd mise git starship.toml; do
   [[ -e $HOME/.config/$d ]] || continue
   while read -r f; do

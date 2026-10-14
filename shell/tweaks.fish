@@ -1,6 +1,8 @@
 # Show tweaks that TWEAKS.md doesn't cover yet (counted daily by tweaks-check.timer)
 status is-interactive; or return
-set -l state ~/.cache/omarchy-tweak-tracker/status
+set -l cache ~/.cache
+set -q XDG_CACHE_HOME; and set cache $XDG_CACHE_HOME
+set -l state $cache/omarchy-tweak-tracker/status
 test -r $state; or return
 read -l unlisted missing <$state
 test "$unlisted" -gt 0 -o "$missing" -gt 0 2>/dev/null; or return

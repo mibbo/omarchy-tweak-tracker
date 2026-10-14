@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Count tweaks that TWEAKS.md doesn't match (unlisted or missing), for the fish greeting
-# (~/.config/fish/conf.d/tweaks.fish) and a desktop notification when the count grows.
+# Count tweaks that TWEAKS.md doesn't match (unlisted or missing), for the terminal reminder
+# (shell/tweaks.fish, shell/tweaks.sh) and a desktop notification when the count grows.
 # Run daily by tweaks-check.timer, and after "sync tweaks" with --quiet.
 #
 #   tweaks-check           update the count, notify if it went up

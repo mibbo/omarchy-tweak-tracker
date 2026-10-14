@@ -5,7 +5,7 @@
 #   scripts/install --data <path>   use this folder as the data repo
 #
 # - links the skill to ~/.claude/skills/tweaks, tweaks-audit and tweaks-check to ~/.local/bin,
-#   the fish reminder and the daily timer
+#   and the daily timer; adds the terminal reminder to fish, ~/.bashrc and ~/.zshrc
 # - finds, clones or creates your private data repo (default: my-omarchy-tweaks next to this repo)
 #   and saves its path in ~/.config/omarchy-tweak-tracker/config
 # - adds the logging rule to ~/.claude/CLAUDE.md
@@ -50,9 +50,24 @@ link() {
 link "$TOOL/skills/tweaks" "$HOME/.claude/skills/tweaks"
 link "$TOOL/skills/tweaks/scripts/tweaks-audit" "$HOME/.local/bin/tweaks-audit"
 link "$TOOL/skills/tweaks/scripts/tweaks-check" "$HOME/.local/bin/tweaks-check"
-link "$TOOL/fish/tweaks.fish" "$HOME/.config/fish/conf.d/tweaks.fish"
 link "$TOOL/systemd/tweaks-check.service" "$HOME/.config/systemd/user/tweaks-check.service"
 link "$TOOL/systemd/tweaks-check.timer" "$HOME/.config/systemd/user/tweaks-check.timer"
+
+# Terminal reminder: fish conf.d, plus one guarded line in each bash/zsh rc file that exists
+if command -v fish >/dev/null || [[ -d $HOME/.config/fish ]]; then
+  link "$TOOL/shell/tweaks.fish" "$HOME/.config/fish/conf.d/tweaks.fish"
+fi
+rc_line="[ -f \"${TOOL/#$HOME/\$HOME}/shell/tweaks.sh\" ] && . \"${TOOL/#$HOME/\$HOME}/shell/tweaks.sh\"  # omarchy-tweak-tracker"
+for rc in "$HOME/.bashrc" "${ZDOTDIR:-$HOME}/.zshrc"; do
+  [[ -f $rc ]] || continue
+  if grep -q '# omarchy-tweak-tracker$' "$rc"; then
+    # Keep the line pointing at this checkout
+    sed -i "/# omarchy-tweak-tracker\$/c\\$rc_line" "$rc"
+  else
+    printf '\n%s\n' "$rc_line" >>"$rc"
+    echo "added: reminder line to ${rc/#$HOME/\~}"
+  fi
+done
 
 # --- Data repo ------------------------------------------------------------------------------------
 DATA_DIR=

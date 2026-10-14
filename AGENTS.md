@@ -11,6 +11,6 @@ for the design. Users' tweak lists live in their own private data repo (default 
   backticked paths and package names, so keep that convention in the skill and the examples.
 - `scripts/install` must stay safe to run again and must work for other users: no hardcoded user names, hosts,
   hardware or paths. Personal data never goes into this repo, not even in examples.
-- `skills/tweaks`, `tweaks-audit`, `tweaks-check`, the fish file and the systemd units are symlinked into place
-  by `scripts/install`, so edits are live immediately.
+- `skills/tweaks`, `tweaks-audit`, `tweaks-check`, `shell/tweaks.fish` and the systemd units are symlinked into place
+  by `scripts/install`, which also adds a guarded line sourcing `shell/tweaks.sh` to `~/.bashrc` and `~/.zshrc`, so edits are live immediately.
 - Use `gh` for GitHub operations.

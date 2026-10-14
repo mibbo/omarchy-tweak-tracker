@@ -16,7 +16,7 @@ up another Omarchy machine, Claude builds a setup script from the list.
   hooks. Also flags listed things that have since disappeared.
 - **Sync.** "sync tweaks" turns everything unlisted into entries in one go, then commits and pushes.
 - **Daily reminder.** A background check (no Claude, no tokens) notifies you when unlisted tweaks appear, and
-  new terminals show a reminder until you sync.
+  new terminals (fish, bash or zsh) show a reminder until you sync.
 - **Cleanup help.** Statuses (`testing`, `remove-later`, `review`) keep test installs from piling up. The list
   view shows what needs a decision, tweaks that touch the same files, and things in `testing` for too long.
 - **Clean removal.** Every entry has exact undo steps. Removed tweaks move to a Removed section with the reason,
@@ -46,7 +46,9 @@ gh repo clone mibbo/omarchy-tweak-tracker ~/src/omarchy-tweak-tracker
 
 The installer:
 - links the skill to `~/.claude/skills/tweaks` and `tweaks-audit` and `tweaks-check` to `~/.local/bin`
-- links the fish reminder and the timer, and enables the timer
+- links the timer and enables it
+- adds the terminal reminder: links it into fish's `conf.d`, and adds one line to `~/.bashrc` and `~/.zshrc`
+  (if they exist) that sources `shell/tweaks.sh`
 - asks for your data repo folder (default: `my-omarchy-tweaks` next to this repo). It clones your existing
   GitHub repo of that name, or creates one, private.
 - saves the folder in `~/.config/omarchy-tweak-tracker/config`
@@ -169,7 +171,7 @@ You don't have to remember to sync. A daily user timer (`tweaks-check.timer`) ru
 - If the machine was off or asleep at midnight, it runs at the next boot or wake. Missed days don't pile up.
 - When the number of unlisted tweaks goes **up**, you get one desktop notification. Clicking it opens a terminal
   with Claude running "sync tweaks".
-- While anything is unlisted, new terminals show:
+- While anything is unlisted, new terminals show (in fish, bash and zsh):
   `⚠ Tweaks: 3 unlisted. Ask Claude to "sync tweaks".`
 
 It uses no Claude and no tokens, takes a few seconds, and runs at idle priority.
@@ -243,7 +245,7 @@ It compares:
   desktop entries and AppImages
 - **System files**: files in `/etc`, `/usr/local` and `/opt` that no package owns, changed after the baseline,
   plus package config files you've edited
-- **Config**: `~/.bashrc` and `~/.config/{hypr,omarchy,fish,...}` against Omarchy's templates in
+- **Config**: `~/.bashrc`, `~/.zshrc` and `~/.config/{hypr,omarchy,fish,...}` against Omarchy's templates in
   `/usr/share/omarchy`, `~/.local/bin`, Claude Code skills, hooks and `CLAUDE.md`
 - **Removed things**: every path under **Files** and every package under **Packages** in active entries
 
@@ -270,13 +272,13 @@ systemctl --user disable --now tweaks-check.timer
 rm ~/.claude/skills/tweaks ~/.local/bin/tweaks-{audit,check} ~/.config/fish/conf.d/tweaks.fish \
    ~/.config/systemd/user/tweaks-check.{service,timer}
 rm -r ~/.config/omarchy-tweak-tracker ~/.cache/omarchy-tweak-tracker
+sed -i '/# omarchy-tweak-tracker$/d' ~/.bashrc ~/.zshrc
 ```
 
 Then delete the `omarchy-tweak-tracker` block in `~/.claude/CLAUDE.md`. Your data repo stays untouched.
 
 ## Limitations
 
-- The terminal reminder is for fish. In bash or zsh you still get the desktop notification.
 - Claude can occasionally forget to log a tweak during a long task. The audit and the daily reminder catch it.
 - Without `--sudo`, the audit can't look inside `/etc/sudoers.d` and `/etc/polkit-1/rules.d`.
 - Config checks cover the folders Omarchy ships templates for, plus fish, systemd, mise and git. Other apps'
@@ -288,7 +290,7 @@ Then delete the `omarchy-tweak-tracker` block in `~/.claude/CLAUDE.md`. Your dat
 skills/tweaks/SKILL.md          how Claude logs, syncs, shows, removes and replicates tweaks
 skills/tweaks/scripts/          tweaks-audit, tweaks-check, tweaks-push, tweaks-env
 systemd/                        daily tweaks-check timer (user unit)
-fish/tweaks.fish                reminder line in new terminals
+shell/tweaks.fish, tweaks.sh    reminder line in new terminals (fish; bash and zsh)
 scripts/install                 setup, safe to run again
 examples/archbook/TWEAKS.md     a sample list
 ```
