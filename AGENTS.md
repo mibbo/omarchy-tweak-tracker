@@ -14,3 +14,4 @@ for the design. Users' tweak lists live in their own private data repo (default 
 - `skills/tweaks`, `tweaks-audit`, `tweaks-check`, `shell/tweaks.fish` and the systemd units are symlinked into place
   by `scripts/install`, which also adds a guarded line sourcing `shell/tweaks.sh` to `~/.bashrc` and `~/.zshrc`, so edits are live immediately.
 - Use `gh` for GitHub operations.
+- The backlog is GitHub Issues (`gh issue list`). Add new ideas there, and close issues from the commit that implements them.
